@@ -1,0 +1,97 @@
+# Render with envsubst as documented in README.md. Do not apply this template directly.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: influxdb3-mcp-http
+  namespace: ${MCP_NAMESPACE}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: influxdb3-mcp-http
+  template:
+    metadata:
+      labels:
+        app: influxdb3-mcp-http
+    spec:
+      # Local image is imported only on this node. Use a registry for HA/multi-node.
+      nodeSelector:
+        kubernetes.io/hostname: ${MCP_NODE}
+      automountServiceAccountToken: false
+      containers:
+        - name: mcp
+          image: influxdb3-mcp-server:local-http
+          imagePullPolicy: Never
+          command: ["node", "build/http.js"]
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: MCP_HTTP_HOST
+              value: 0.0.0.0
+            - name: MCP_HTTP_PORT
+              value: "3000"
+            - name: MCP_HTTP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb3-mcp-http-auth
+                  key: token
+            - name: INFLUX_DB_PRODUCT_TYPE
+              value: enterprise
+            - name: INFLUX_DB_INSTANCE_URL
+              value: ${MCP_QUERY_URL}
+            - name: INFLUX_DB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb3-mcp-db-auth
+                  key: TOKEN
+            - name: INFLUX_MCP_TOOL_PROFILE
+              value: readonly
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            failureThreshold: 12
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+            seccompProfile:
+              type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: influxdb3-mcp-http
+  namespace: ${MCP_NAMESPACE}
+spec:
+  type: ClusterIP
+  selector:
+    app: influxdb3-mcp-http
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

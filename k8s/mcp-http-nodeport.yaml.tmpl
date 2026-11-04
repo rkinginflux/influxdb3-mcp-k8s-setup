@@ -1,0 +1,18 @@
+# Optional permanent LAN exposure. Apply only on a trusted, firewall-restricted LAN.
+# Deleting this Service leaves the Deployment and ClusterIP Service intact.
+apiVersion: v1
+kind: Service
+metadata:
+  name: influxdb3-mcp-lan
+  namespace: ${MCP_NAMESPACE}
+spec:
+  type: NodePort
+  externalTrafficPolicy: Cluster
+  selector:
+    app: influxdb3-mcp-http
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      nodePort: ${MCP_NODE_PORT}
+      protocol: TCP

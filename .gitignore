@@ -1,0 +1,11 @@
+# Generated manifests and local credentials
+/generated/
+/.secrets/
+.env
+.env.*
+*kubeconfig*
+*token*
+*.tar
+*.tar.gz
+node_modules/
+build/
