@@ -1,13 +1,14 @@
 # Render with envsubst as documented in README.md. Do not apply this template directly.
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: influxdb3-mcp-http
   namespace: ${MCP_NAMESPACE}
 spec:
+  serviceName: influxdb3-mcp-http-headless
   replicas: 1
-  strategy:
-    type: Recreate
+  updateStrategy:
+    type: RollingUpdate
   selector:
     matchLabels:
       app: influxdb3-mcp-http
@@ -81,6 +82,20 @@ spec:
             runAsUser: 1001
             seccompProfile:
               type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: influxdb3-mcp-http-headless
+  namespace: ${MCP_NAMESPACE}
+spec:
+  clusterIP: None
+  selector:
+    app: influxdb3-mcp-http
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
 ---
 apiVersion: v1
 kind: Service
