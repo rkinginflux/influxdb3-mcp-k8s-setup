@@ -9,7 +9,7 @@ See [AGENTS.md](AGENTS.md) for an AI agent's operational checklist. This guide i
 ## Prerequisites
 
 - An existing, healthy InfluxDB 3 Enterprise deployment with a query-capable Service.
-- `kubectl` with authorization to create Secrets, Services, Deployments, and temporary privileged node-debug pods; Docker, `envsubst`, Python 3, Git, and access to pull `node:24-alpine` and `busybox:1.36`.
+- `kubectl` with authorization to create Secrets, Services, StatefulSets, and temporary privileged node-debug pods; Docker, `envsubst`, Python 3, Git, and access to pull `node:24-alpine` and `busybox:1.36`.
 - A database token with the intended read permissions, saved to a **private local file**. This guide does not create or disclose a database token. Check its actual scope before mounting it.
 - A node whose containerd image store accepts a locally imported image, and a free NodePort in the cluster's configured range if LAN access is desired.
 
@@ -48,7 +48,7 @@ cp "$GUIDE/overlay/http.ts" "$SOURCE/src/http.ts"
 docker build --platform linux/amd64 -t influxdb3-mcp-server:local-http "$SOURCE"
 ```
 
-The upstream Dockerfile copies `src/`, runs `pnpm run build`, and defaults to stdio. The Deployment overrides the command to `node build/http.js`. Use the target node's platform instead of `linux/amd64` on ARM. No image is pushed to a registry by these commands.
+The upstream Dockerfile copies `src/`, runs `pnpm run build`, and defaults to stdio. The StatefulSet overrides the command to `node build/http.js`. Use the target node's platform instead of `linux/amd64` on ARM. No image is pushed to a registry by these commands.
 
 ## 3. Create credentials in the Enterprise namespace
 
@@ -96,7 +96,7 @@ docker save influxdb3-mcp-server:local-http | \
 kubectl --kubeconfig "$K" -n "$MCP_NAMESPACE" delete pod "$DEBUG_POD"
 ```
 
-For an image rebuild, repeat the import on the same node and then restart the Deployment. A different node needs a separate import or a registry. Do not publish images or change the Enterprise Helm release as part of this procedure.
+For an image rebuild, repeat the import on the same node and then run `kubectl --kubeconfig "$K" -n "$MCP_NAMESPACE" rollout restart sts/influxdb3-mcp-http` and wait for its rollout. A different node needs a separate import or a registry. Do not publish images or change the Enterprise Helm release as part of this procedure.
 
 ## 5. Render, validate, and deploy
 
@@ -109,12 +109,14 @@ envsubst '${MCP_NAMESPACE} ${MCP_NODE} ${MCP_QUERY_URL}' \
   < k8s/mcp-http.yaml.tmpl > generated/mcp-http.yaml
 kubectl --kubeconfig "$K" apply --dry-run=server -f generated/mcp-http.yaml
 kubectl --kubeconfig "$K" apply -f generated/mcp-http.yaml
-kubectl --kubeconfig "$K" -n "$MCP_NAMESPACE" rollout status deploy/influxdb3-mcp-http --timeout=120s
+kubectl --kubeconfig "$K" -n "$MCP_NAMESPACE" rollout status sts/influxdb3-mcp-http --timeout=120s
 kubectl --kubeconfig "$K" -n "$MCP_NAMESPACE" get endpointslices \
   -l kubernetes.io/service-name=influxdb3-mcp-http
 ```
 
 The in-cluster MCP endpoint is `http://influxdb3-mcp-http.<namespace>.svc.cluster.local:3000/mcp`. `/healthz` is a probe only; a Ready pod does not prove the Enterprise token works.
+
+The StatefulSet uses `influxdb3-mcp-http-headless` for stable pod DNS and keeps the existing ClusterIP `influxdb3-mcp-http` for clients. It has one replica and no persistent volume: switching controller types does not add storage or HA. If migrating an existing installation, applying this template **does not replace or remove** `deploy/influxdb3-mcp-http`; both controllers may serve through the same Services during the transition. To verify the **new** pod rather than a request routed to the old Deployment, run `kubectl --kubeconfig "$K" -n "$MCP_NAMESPACE" port-forward pod/influxdb3-mcp-http-0 13001:3000` in another terminal, set `MCP_URL=http://127.0.0.1:13001/mcp`, and run the protocol probe in section 6. Only after the new pod passes, and with authorization to retire the old workload, run `kubectl --kubeconfig "$K" -n "$MCP_NAMESPACE" delete deploy/influxdb3-mcp-http`. Confirm the client Service still has a ready EndpointSlice and passes the protocol probe after the old pod terminates.
 
 ### Optional: permanent LAN port
 
@@ -136,7 +138,7 @@ NodePort listens through **every cluster node** (`externalTrafficPolicy: Cluster
 From a workstation on the trusted LAN, use the LAN URL; alternatively, forward the ClusterIP Service temporarily. This probe reads the protected HTTP token without printing it and checks authentication, MCP initialization, and tool advertisement:
 
 ```sh
-MCP_URL="http://$NODE_IP:$MCP_NODE_PORT/mcp"
+MCP_URL=${MCP_URL:-"http://$NODE_IP:$MCP_NODE_PORT/mcp"}
 export MCP_URL
 python3 - <<'PY'
 import json, os, pathlib, urllib.error, urllib.request
@@ -179,6 +181,6 @@ An MCP client needs a Streamable HTTP transport URL and `Authorization: Bearer <
 - `CreateContainerConfigError`: verify both Secrets are in the workload namespace with keys `TOKEN` and `token`; do not display their values.
 - Healthy `/healthz` but MCP operations fail: inspect the querier Service EndpointSlice, database token scope, and bounded pod logs (do not dump environment variables).
 - `31300` unavailable: choose another free NodePort in your cluster range; re-render and re-apply only the NodePort Service.
-- Removing a local YAML file does **not** remove live Kubernetes objects. Delete the optional NodePort Service first; only delete the Deployment and ClusterIP Service if you intend to stop the server. Keep credential Secrets unless you explicitly intend to revoke access.
+- Removing a local YAML file does **not** remove live Kubernetes objects. Delete the optional NodePort Service first; only delete the StatefulSet, headless Service, and ClusterIP Service if you intend to stop the server. An old Deployment must also be removed separately after a verified migration. Keep credential Secrets unless you explicitly intend to revoke access.
 
 This repository's example is **not** TLS, HA, or production hardening. The MIT license applies to this guide and overlay; the upstream MCP server remains under its own license. No real token, kubeconfig, license, or environment-specific hostname is included here.
